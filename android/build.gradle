@@ -42,6 +42,5 @@ android {
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$KotlinVersion"
     implementation "org.jetbrains.kotlin:kotlin-reflect:$KotlinVersion"
-    implementation 'com.android.support:multidex:2.0.1' //enter the latest multidex versio
     implementation 'androidx.core:core-ktx:1.12.0'
 }
