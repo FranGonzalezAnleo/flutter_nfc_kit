@@ -30,23 +30,27 @@ android {
     compileSdkVersion 34
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
     }
 
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
     }
 
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
 
     defaultConfig {
         applicationId "im.nfc.flutter_nfc_kit_example"
-        minSdkVersion 26
+        minSdkVersion 23
         targetSdkVersion 34
         compileSdkVersion 34
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        multiDexEnabled true
     }
 
     buildTypes {
@@ -64,6 +68,7 @@ flutter {
     source '../..'
 }
 
-dependencies {
+dependencies {  
+    implementation 'com.android.support:multidex:2.0.1' //enter the latest multidex versio
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$KotlinVersion"
 }

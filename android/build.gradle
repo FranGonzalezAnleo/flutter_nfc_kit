@@ -20,15 +20,18 @@ android {
     compileSdkVersion 34
     
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
     }
     defaultConfig {
-        minSdkVersion 26
+        minSdkVersion 23
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     lintOptions {
@@ -39,5 +42,6 @@ android {
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$KotlinVersion"
     implementation "org.jetbrains.kotlin:kotlin-reflect:$KotlinVersion"
+    implementation 'com.android.support:multidex:2.0.1' //enter the latest multidex versio
     implementation 'androidx.core:core-ktx:1.12.0'
 }
