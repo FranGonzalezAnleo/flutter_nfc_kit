@@ -306,10 +306,6 @@ class FlutterNfcKit {
   ///
   /// Note: Sometimes NDEF check [leads to error](https://github.com/nfcim/flutter_nfc_kit/issues/11), and disabling it might help.
   /// If disabled, you will not be able to use any NDEF-related methods in the current session.
-  ///
-  /// Caution: due to [bug in iOS CoreNFC](https://github.com/nfcim/flutter_nfc_kit/issues/23), [readIso18092] is disabled by default from 2.2.1.
-  /// If enabled, please ensure that `com.apple.developer.nfc.readersession.felica.systemcodes` is set in `Info.plist`,
-  /// or your NFC **WILL BE TOTALLY UNAVAILABLE BEFORE REBOOT**.
   static Future<NFCTag> poll({
     Duration? timeout,
     bool androidPlatformSound = true,
@@ -456,8 +452,8 @@ class FlutterNfcKit {
   /// Returns whether authentication succeeds.
   static Future<bool> authenticateSector<T>(int index,
       {T? keyA, T? keyB}) async {
-    assert((keyA.runtimeType == String || keyA.runtimeType == Uint8List) ||
-        (keyB.runtimeType == String || keyB.runtimeType == Uint8List));
+    assert((keyA is String || keyA is Uint8List) ||
+        (keyB is String || keyB is Uint8List));
     return await _channel.invokeMethod(
         'authenticateSector', {'index': index, 'keyA': keyA, 'keyB': keyB});
   }
@@ -493,7 +489,7 @@ class FlutterNfcKit {
   static Future<void> writeBlock<T>(int index, T data,
       {Iso15693RequestFlags? iso15693Flags,
       bool iso15693ExtendedMode = false}) async {
-    assert(T is String || T is Uint8List);
+    assert(data is String || data is Uint8List);
     var flags = iso15693Flags ?? Iso15693RequestFlags();
     await _channel.invokeMethod('writeBlock', {
       'index': index,

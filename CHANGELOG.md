@@ -163,3 +163,16 @@
 * Bump multiple dependencies:
   * Android plugin / example app: Java 17, AGP 7.4.2, Kotlin 1.9.23, minSdkVersion 26 (fix #127, #144, #145)
   * `js` library: 0.7.1
+
+## 3.5.1
+
+* Fix multiple issues related to `authenticateSector` (#159):
+  * Fix type checking assertions of arguments
+  * Add missing call to `connect` in Android plugin
+* Add instruction on resolving `js` dependency conflict in README
+
+## 3.5.2
+
+* Some MiFare Classic fixes by @knthm:
+  * allow authentication of sector 0 (#157)
+  * fix data type check in `writeBlock` (#161)

@@ -8,6 +8,7 @@ import android.nfc.NfcAdapter
 import android.nfc.NfcAdapter.*
 import android.nfc.tech.*
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import im.nfc.flutter_nfc_kit.ByteUtils.canonicalizeData
 import im.nfc.flutter_nfc_kit.ByteUtils.hexToBytes
@@ -30,7 +31,6 @@ import java.lang.ref.WeakReference
 import java.lang.reflect.InvocationTargetException
 import java.util.*
 import kotlin.concurrent.schedule
-import kotlin.concurrent.thread
 
 
 class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
@@ -43,6 +43,9 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         private var ndefTechnology: Ndef? = null
         private var mifareInfo: MifareInfo? = null
 
+        private lateinit var nfcHandlerThread: HandlerThread
+        private lateinit var nfcHandler: Handler
+
         private fun TagTechnology.transceive(data: ByteArray, timeout: Int?): ByteArray {
             if (timeout != null) {
                 try {
@@ -53,11 +56,42 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             val transceiveMethod = this.javaClass.getMethod("transceive", ByteArray::class.java)
             return transceiveMethod.invoke(this, data) as ByteArray
         }
+
+        private fun runOnNfcThread(result: Result, desc: String, fn: () -> Unit) {
+            val handledFn = Runnable {
+                try {
+                    fn()
+                } catch (ex: Exception) {
+                    Log.e(TAG, "$desc error", ex)
+                    val excMessage = ex.localizedMessage
+                    when (ex) {
+                        is IOException -> result?.error("500", "Communication error", excMessage)
+                        is SecurityException -> result?.error("503", "Tag already removed", excMessage)
+                        is FormatException -> result?.error("400", "NDEF format error", excMessage)
+                        is InvocationTargetException -> result?.error("500", "Communication error", excMessage)
+                        is IllegalArgumentException -> result?.error("400", "Command format error", excMessage)
+                        is NoSuchMethodException -> result?.error("405", "Transceive not supported for this type of card", excMessage)
+                        else -> result?.error("500", "Unhandled error", excMessage)
+                    }
+                }
+            }
+            if (!nfcHandler.post(handledFn)) {
+                result.error("500", "Failed to post job to NFC Handler thread.", null)
+            }
+        }
     }
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+        nfcHandlerThread = HandlerThread("NfcHandlerThread")
+        nfcHandlerThread.start()
+        nfcHandler = Handler(nfcHandlerThread.looper)
+
         val channel = MethodChannel(flutterPluginBinding.binaryMessenger, "flutter_nfc_kit")
         channel.setMethodCallHandler(this)
+    }
+
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        nfcHandlerThread.quitSafely()
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
@@ -113,27 +147,21 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 val timeout = call.argument<Int>("timeout")!!
                 // technology and option bits are set in Dart code
                 val technologies = call.argument<Int>("technologies")!!
-                thread {
+                runOnNfcThread(result, "Poll") {
                     pollTag(nfcAdapter, result, timeout, technologies)
                 }
             }
 
             "finish" -> {
                 pollingTimeoutTask?.cancel()
-                thread {
-                    try {
-                        val tagTech = tagTechnology
-                        if (tagTech != null && tagTech.isConnected) {
-                            tagTech.close()
-                        }
-                        val ndefTech = ndefTechnology
-                        if (ndefTech != null && ndefTech.isConnected) {
-                            ndefTech.close()
-                        }
-                    } catch (ex: SecurityException) {
-                        Log.e(TAG, "Tag already removed", ex)
-                    } catch (ex: IOException) {
-                        Log.e(TAG, "Close tag error", ex)
+                runOnNfcThread(result, "Close tag") {
+                    val tagTech = tagTechnology
+                    if (tagTech != null && tagTech.isConnected) {
+                        tagTech.close()
+                    }
+                    val ndefTech = ndefTechnology
+                    if (ndefTech != null && ndefTech.isConnected) {
+                        ndefTech.close()
                     }
                     if (activity.get() != null) {
                         nfcAdapter.disableReaderMode(activity.get())
@@ -155,30 +183,13 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 }
                 val (sendingBytes, sendingHex) = canonicalizeData(data)
 
-                thread {
-                    try {
-                        switchTechnology(tagTech, ndefTechnology)
-                        val timeout = call.argument<Int>("timeout")
-                        val resp = tagTech.transceive(sendingBytes, timeout)
-                        when (data) {
-                            is String -> result.success(resp.toHexString())
-                            else -> result.success(resp)
-                        }
-                    } catch (ex: SecurityException) {
-                        Log.e(TAG, "Transceive Error: $sendingHex", ex)
-                        result.error("503", "Tag already removed", ex.localizedMessage)
-                    } catch (ex: IOException) {
-                        Log.e(TAG, "Transceive Error: $sendingHex", ex)
-                        result.error("500", "Communication error", ex.localizedMessage)
-                    } catch (ex: InvocationTargetException) {
-                        Log.e(TAG, "Transceive Error: $sendingHex", ex.cause ?: ex)
-                        result.error("500", "Communication error", ex.cause?.localizedMessage)
-                    } catch (ex: IllegalArgumentException) {
-                        Log.e(TAG, "Command Error: $sendingHex", ex)
-                        result.error("400", "Command format error", ex.localizedMessage)
-                    } catch (ex: NoSuchMethodException) {
-                        Log.e(TAG, "Transceive not supported: $sendingHex", ex)
-                        result.error("405", "Transceive not supported for this type of card", null)
+                runOnNfcThread(result, "Transceive: $sendingHex") {
+                    switchTechnology(tagTech, ndefTechnology)
+                    val timeout = call.argument<Int>("timeout")
+                    val resp = tagTech.transceive(sendingBytes, timeout)
+                    when (data) {
+                        is String -> result.success(resp.toHexString())
+                        else -> result.success(resp)
                     }
                 }
             }
@@ -187,45 +198,34 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             "readNDEF" -> {
                 if (!ensureNDEF()) return
                 val ndef = ndefTechnology!!
-                thread {
-                    try {
-                        switchTechnology(ndef, tagTechnology)
-                        // read NDEF message
-                        val message: NdefMessage? = if (call.argument<Boolean>("cached")!!) {
-                            ndef.cachedNdefMessage
-                        } else {
-                            ndef.ndefMessage
-                        }
-                        val parsedMessages = mutableListOf<Map<String, String>>()
-                        if (message != null) {
-                            for (record in message.records) {
-                                parsedMessages.add(mapOf(
-                                        "identifier" to record.id.toHexString(),
-                                        "payload" to record.payload.toHexString(),
-                                        "type" to record.type.toHexString(),
-                                        "typeNameFormat" to when (record.tnf) {
-                                            NdefRecord.TNF_ABSOLUTE_URI -> "absoluteURI"
-                                            NdefRecord.TNF_EMPTY -> "empty"
-                                            NdefRecord.TNF_EXTERNAL_TYPE -> "nfcExternal"
-                                            NdefRecord.TNF_WELL_KNOWN -> "nfcWellKnown"
-                                            NdefRecord.TNF_MIME_MEDIA -> "media"
-                                            NdefRecord.TNF_UNCHANGED -> "unchanged"
-                                            else -> "unknown"
-                                        }
-                                ))
-                            }
-                        }
-                        result.success(JSONArray(parsedMessages).toString())
-                    } catch (ex: SecurityException) {
-                        Log.e(TAG, "Read NDEF Error", ex)
-                        result.error("503", "Tag already removed", ex.localizedMessage)
-                    } catch (ex: IOException) {
-                        Log.e(TAG, "Read NDEF Error", ex)
-                        result.error("500", "Communication error", ex.localizedMessage)
-                    } catch (ex: FormatException) {
-                        Log.e(TAG, "NDEF Format Error", ex)
-                        result.error("400", "NDEF format error", ex.localizedMessage)
+                runOnNfcThread(result, "Read NDEF") {
+                    switchTechnology(ndef, tagTechnology)
+                    // read NDEF message
+                    val message: NdefMessage? = if (call.argument<Boolean>("cached")!!) {
+                        ndef.cachedNdefMessage
+                    } else {
+                        ndef.ndefMessage
                     }
+                    val parsedMessages = mutableListOf<Map<String, String>>()
+                    if (message != null) {
+                        for (record in message.records) {
+                            parsedMessages.add(mapOf(
+                                    "identifier" to record.id.toHexString(),
+                                    "payload" to record.payload.toHexString(),
+                                    "type" to record.type.toHexString(),
+                                    "typeNameFormat" to when (record.tnf) {
+                                        NdefRecord.TNF_ABSOLUTE_URI -> "absoluteURI"
+                                        NdefRecord.TNF_EMPTY -> "empty"
+                                        NdefRecord.TNF_EXTERNAL_TYPE -> "nfcExternal"
+                                        NdefRecord.TNF_WELL_KNOWN -> "nfcWellKnown"
+                                        NdefRecord.TNF_MIME_MEDIA -> "media"
+                                        NdefRecord.TNF_UNCHANGED -> "unchanged"
+                                        else -> "unknown"
+                                    }
+                            ))
+                        }
+                    }
+                    result.success(JSONArray(parsedMessages).toString())
                 }
             }
 
@@ -236,43 +236,32 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     result.error("405", "Tag not writable", null)
                     return
                 }
-                thread {
-                    try {
-                        switchTechnology(ndef, tagTechnology)
-                        // generate NDEF message
-                        val jsonString = call.argument<String>("data")!!
-                        val recordData = JSONArray(jsonString)
-                        val records = Array(recordData.length(), init = { i: Int ->
-                            val record: JSONObject = recordData.get(i) as JSONObject
-                            NdefRecord(
-                                    when (record.getString("typeNameFormat")) {
-                                        "absoluteURI" -> NdefRecord.TNF_ABSOLUTE_URI
-                                        "empty" -> NdefRecord.TNF_EMPTY
-                                        "nfcExternal" -> NdefRecord.TNF_EXTERNAL_TYPE
-                                        "nfcWellKnown" -> NdefRecord.TNF_WELL_KNOWN
-                                        "media" -> NdefRecord.TNF_MIME_MEDIA
-                                        "unchanged" -> NdefRecord.TNF_UNCHANGED
-                                        else -> NdefRecord.TNF_UNKNOWN
-                                    },
-                                    record.getString("type").hexToBytes(),
-                                    record.getString("identifier").hexToBytes(),
-                                    record.getString("payload").hexToBytes()
-                            )
-                        })
-                        // write NDEF message
-                        val message = NdefMessage(records)
-                        ndef.writeNdefMessage(message)
-                        result.success("")
-                    } catch (ex: SecurityException) {
-                        Log.e(TAG, "Write NDEF Error", ex)
-                        result.error("503", "Tag already removed", ex.localizedMessage)
-                    } catch (ex: IOException) {
-                        Log.e(TAG, "Write NDEF Error", ex)
-                        result.error("500", "Communication error", ex.localizedMessage)
-                    } catch (ex: FormatException) {
-                        Log.e(TAG, "NDEF Format Error", ex)
-                        result.error("400", "NDEF format error", ex.localizedMessage)
-                    }
+                runOnNfcThread(result, "Write NDEF") {
+                    switchTechnology(ndef, tagTechnology)
+                    // generate NDEF message
+                    val jsonString = call.argument<String>("data")!!
+                    val recordData = JSONArray(jsonString)
+                    val records = Array(recordData.length(), init = { i: Int ->
+                        val record: JSONObject = recordData.get(i) as JSONObject
+                        NdefRecord(
+                                when (record.getString("typeNameFormat")) {
+                                    "absoluteURI" -> NdefRecord.TNF_ABSOLUTE_URI
+                                    "empty" -> NdefRecord.TNF_EMPTY
+                                    "nfcExternal" -> NdefRecord.TNF_EXTERNAL_TYPE
+                                    "nfcWellKnown" -> NdefRecord.TNF_WELL_KNOWN
+                                    "media" -> NdefRecord.TNF_MIME_MEDIA
+                                    "unchanged" -> NdefRecord.TNF_UNCHANGED
+                                    else -> NdefRecord.TNF_UNKNOWN
+                                },
+                                record.getString("type").hexToBytes(),
+                                record.getString("identifier").hexToBytes(),
+                                record.getString("payload").hexToBytes()
+                        )
+                    })
+                    // write NDEF message
+                    val message = NdefMessage(records)
+                    ndef.writeNdefMessage(message)
+                    result.success("")
                 }
             }
 
@@ -283,20 +272,12 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     result.error("405", "Tag not writable", null)
                     return
                 }
-                thread {
-                    try {
-                        switchTechnology(ndef, tagTechnology)
-                        if (ndef.makeReadOnly()) {
-                            result.success("")
-                        } else {
-                            result.error("500", "Failed to lock NDEF tag", null)
-                        }
-                    } catch (ex: SecurityException) {
-                        Log.e(TAG, "Lock NDEF Error", ex)
-                        result.error("503", "Tag already removed", ex.localizedMessage)
-                    } catch (ex: IOException) {
-                        Log.e(TAG, "Lock NDEF Error", ex)
-                        result.error("500", "Communication error", ex.localizedMessage)
+                runOnNfcThread(result, "Lock NDEF") {
+                    switchTechnology(ndef, tagTechnology)
+                    if (ndef.makeReadOnly()) {
+                        result.success("")
+                    } else {
+                        result.error("500", "Failed to lock NDEF tag", null)
                     }
                 }
             }
@@ -309,30 +290,27 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     return
                 }
                 val index = call.argument<Int>("index")!!
-                if (!(0 < index && index < mifareInfo!!.sectorCount!!)) {
-                    result.error("400", "Invalid sector index $index", null)
+                val maxSector = mifareInfo!!.sectorCount!!
+                if (index !in 0 until maxSector) {
+                    result.error("400", "Invalid sector index $index, should be in (0, $maxSector)", null)
                     return
                 }
                 val keyA = call.argument<Any>("keyA")
                 val keyB = call.argument<Any>("keyB")
-                thread {
-                    try {
-                        val tag = tagTech as MifareClassic
-                        // key A takes precedence if present
-                        val success = if (keyA != null) {
-                            val (key, _) = canonicalizeData(keyA)
-                            tag.authenticateSectorWithKeyA(index, key)
-                        } else if (keyB != null) {
-                            val (key, _) = canonicalizeData(keyB)
-                            tag.authenticateSectorWithKeyB(index, key)
-                        } else {
-                            result.error("400", "No keys provided", null)
-                            return@thread
-                        }
-                        result.success(success)
-                    } catch (ex: IOException) {
-                        Log.e(TAG, "Authenticate block error", ex)
-                        result.error("500", "Authentication error", ex.localizedMessage)
+                runOnNfcThread(result, "Authenticate sector") {
+                    val tag = tagTech as MifareClassic
+                    switchTechnology(tagTech, ndefTechnology)
+                    // key A takes precedence if present
+                    if (keyA != null) {
+                        val (key, _) = canonicalizeData(keyA)
+                        val authStatus = tag.authenticateSectorWithKeyA(index, key)
+                        result.success(authStatus)
+                    } else if (keyB != null) {
+                        val (key, _) = canonicalizeData(keyB)
+                        val authStatus = tag.authenticateSectorWithKeyB(index, key)
+                        result.success(authStatus)
+                    } else {
+                        result.error("400", "No keys provided", null)
                     }
                 }
             }
@@ -349,14 +327,9 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     result.error("400", "Invalid block/page index $index, should be in (0, $maxBlock)", null)
                     return
                 }
-                thread {
-                    try {
-                        switchTechnology(tagTech, ndefTechnology)
-                        tagTech.readBlock(index, result)
-                    } catch (ex: IOException) {
-                        Log.e(TAG, "Read block error", ex)
-                        result.error("500", "Communication error", ex.localizedMessage)
-                    }
+                runOnNfcThread(result, "Read block") {
+                    switchTechnology(tagTech, ndefTechnology)
+                    tagTech.readBlock(index, result)
                 }
             }
 
@@ -372,14 +345,10 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     result.error("400", "Invalid sector index $index, should be in (0, $maxSector)", null)
                     return
                 }
-                thread {
-                    try {
-                        val tag = tagTech as MifareClassic
-                        switchTechnology(tagTech, ndefTechnology)
-                        result.success(tag.readSector(index))
-                    } catch (ex: IOException) {
-                        Log.e(TAG, "Read sector error", ex)
-                        result.error("500", "Communication error", ex.localizedMessage)                    }
+                runOnNfcThread(result, "Read sector") {
+                    val tag = tagTech as MifareClassic
+                    switchTechnology(tagTech, ndefTechnology)
+                    result.success(tag.readSector(index))
                 }
             }
 
@@ -405,22 +374,14 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     result.error("400", "Invalid data size ${bytes.size}, should be ${mifareInfo!!.blockSize}", null)
                     return
                 }
-                thread {
-                    try {
-                        switchTechnology(tagTech, ndefTechnology)
-                        tagTech.writeBlock(index, bytes, result)
-                    } catch (ex: IOException) {
-                        Log.e(TAG, "Read block error", ex)
-                        result.error("500", "Communication error", ex.localizedMessage)
-                    }
+                runOnNfcThread(result, "Write block") {
+                    switchTechnology(tagTech, ndefTechnology)
+                    tagTech.writeBlock(index, bytes, result)
                 }
             }
 
         }
     }
-
-
-    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {}
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = WeakReference(binding.activity)
@@ -443,6 +404,7 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         pollingTimeoutTask = Timer().schedule(timeout.toLong()) {
             try {
                 if (activity.get() != null) {
+
                     nfcAdapter.disableReaderMode(activity.get())
                 }
             } catch (ex: Exception) {
@@ -598,12 +560,7 @@ class FlutterNfcKitPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             result.success(jsonResult.toString())
         }
 
-        try {
-            nfcAdapter.enableReaderMode(activity.get(), pollHandler, technologies, null)
-        } catch (ex: Exception) {
-            Log.e(TAG, "Cannot enable reader mode", ex)
-            result.error("500", "Cannot enable reader mode", ex.localizedMessage)
-        }
+        nfcAdapter.enableReaderMode(activity.get(), pollHandler, technologies, null)
     }
 
     private class MethodResultWrapper(result: Result) : Result {

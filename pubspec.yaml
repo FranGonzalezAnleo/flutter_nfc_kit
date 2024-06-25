@@ -1,6 +1,6 @@
 name: flutter_nfc_kit
 description: Provide NFC functionality on Android, iOS & Web, including reading metadata, read & write NDEF records, and transceive layer 3 & 4 data with NFC tags / cards
-version: 3.5.0
+version: 3.5.2
 homepage: "https://github.com/nfcim/flutter_nfc_kit"
 
 environment:
@@ -21,8 +21,8 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  lints: ^3.0.0
-  build_runner: ^2.4.6
+  lints: ^4.0.0
+  build_runner: ^2.4.9
   json_serializable: ^6.7.1
 
 flutter:
